@@ -101,9 +101,12 @@ echo ""
 
 TRAIN_CMD="train.py \
     --task ${TASK} \
-    --train_data ${TRAIN_DATA} \
-    --val_data ${VAL_DATA} \
-    --test_data ${TEST_DATA} \
+    --data_dir ${DATA_DIR} \
+    --vocab_path ${VOCAB_PATH} \
+    --train_split ${TRAIN_SPLIT} \
+    --val_split ${VAL_SPLIT} \
+    --test_split ${TEST_SPLIT} \
+    --shuffle_buffer ${SHUFFLE_BUFFER} \
     --embedding_dim ${EMBEDDING_DIM} \
     --hidden_dim ${HIDDEN_DIM} \
     --num_layers ${NUM_LAYERS} \
@@ -174,7 +177,9 @@ if [ -f "$BEST_MODEL" ]; then
         --nproc_per_node=2 \
         evaluate.py \
         --checkpoint ${BEST_MODEL} \
-        --test_data ${TEST_DATA} \
+        --data_dir ${DATA_DIR} \
+        --vocab_path ${VOCAB_PATH} \
+        --test_split ${TEST_SPLIT} \
         --num_samples ${NUM_SAMPLES} \
         --output_dir "${WORKSPACE}/evaluation_results/${TASK}" \
         --seed ${SEED}

@@ -1,15 +1,15 @@
 # train.py
 """
-Main training script
+Main training script với Parquet streaming support
 Usage:
     # Single GPU
-    python train.py --task segmentation --train_data data/train.jsonl --val_data data/val.jsonl --test_data data/test.jsonl
-    
+    python train.py --task segmentation --data_dir data/ --vocab_path vocab.json
+
     # Multi-GPU với torchrun
-    torchrun --nproc_per_node=2 train.py --task segmentation --train_data data/train.jsonl --val_data data/val.jsonl --test_data data/test.jsonl
-    
+    torchrun --nproc_per_node=2 train.py --task segmentation --data_dir data/ --vocab_path vocab.json
+
     # Resume training
-    python train.py --task segmentation --train_data data/train.jsonl --val_data data/val.jsonl --test_data data/test.jsonl --resume checkpoints/latest_checkpoint.pt
+    python train.py --task segmentation --data_dir data/ --vocab_path vocab.json --resume checkpoints/latest_checkpoint.pt
 """
 
 import argparse
@@ -18,27 +18,33 @@ import sys
 import torch
 
 from src.config import TrainingConfig, ModelConfig, LabelConfig
-from src.dataset import ChineseTextDataset, create_dataloaders
+from src.dataset import load_vocab, create_streaming_dataloaders
 from src.model import create_model
 from src.trainer import Trainer, setup_distributed, cleanup_distributed
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train BiLSTM model for Classical Chinese')
-    
+
     # Task
     parser.add_argument('--task', type=str, required=True,
                         choices=['punctuation', 'segmentation'],
                         help='Task type')
-    
-    # Data
-    parser.add_argument('--train_data', type=str, required=True,
-                        help='Path to training data (JSONL)')
-    parser.add_argument('--val_data', type=str, required=True,
-                        help='Path to validation data (JSONL)')
-    parser.add_argument('--test_data', type=str, required=True,
-                        help='Path to test data (JSONL)')
-    
+
+    # Data (Parquet streaming)
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Thư mục gốc chứa data (có sub-folders train/, val/, test/)')
+    parser.add_argument('--vocab_path', type=str, required=True,
+                        help='Đường dẫn đến vocab.json')
+    parser.add_argument('--train_split', type=str, default='train',
+                        help='Tên split training (default: train)')
+    parser.add_argument('--val_split', type=str, default='val',
+                        help='Tên split validation (default: val)')
+    parser.add_argument('--test_split', type=str, default='test',
+                        help='Tên split test (default: test)')
+    parser.add_argument('--shuffle_buffer', type=int, default=10000,
+                        help='Kích thước shuffle buffer (default: 10000)')
+
     # Model
     parser.add_argument('--use_crf', action='store_true',
                         help='Use CRF instead of Linear head')
@@ -48,21 +54,23 @@ def parse_args():
                         help='LSTM hidden dimension')
     parser.add_argument('--num_layers', type=int, default=2,
                         help='Number of LSTM layers')
-    parser.add_argument('--dropout', type=float, default=0.3,
+    parser.add_argument('--dropout', type=float, default=0.2,
                         help='Dropout rate')
-    
+
     # Training
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,
                         help='Batch size')
-    parser.add_argument('--num_epochs', type=int, default=50,
+    parser.add_argument('--num_epochs', type=int, default=5,
                         help='Number of epochs')
+    parser.add_argument('--max_steps', type=int, default=-1,
+                        help='Max training steps per epoch (-1 = unlimited)')
     parser.add_argument('--lr', type=float, default=1e-3,
                         help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-5,
                         help='Weight decay')
     parser.add_argument('--gradient_clip', type=float, default=5.0,
                         help='Gradient clipping')
-    
+
     # Paths
     parser.add_argument('--save_dir', type=str, default='checkpoints',
                         help='Directory to save checkpoints')
@@ -70,35 +78,35 @@ def parse_args():
                         help='Directory to save logs')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
-    
+
     # Other
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of data loading workers')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
-    
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    
+
     # Get distributed info
     rank = int(os.environ.get('RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
-    
+
     # Setup distributed
     if world_size > 1:
         setup_distributed(rank, world_size)
-    
+
     # Set seed
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
-    
+
     # Configurations
     label_config = LabelConfig(task_type=args.task)
-    
+
     model_config = ModelConfig(
         embedding_dim=args.embedding_dim,
         hidden_dim=args.hidden_dim,
@@ -106,12 +114,12 @@ def main():
         dropout=args.dropout,
         use_crf=args.use_crf
     )
-    
+
     training_config = TrainingConfig(
         task_type=args.task,
-        train_data=args.train_data,
-        val_data=args.val_data,
-        test_data=args.test_data,
+        train_data=args.data_dir,
+        val_data=args.data_dir,
+        test_data=args.data_dir,
         batch_size=args.batch_size,
         num_epochs=args.num_epochs,
         learning_rate=args.lr,
@@ -122,81 +130,78 @@ def main():
         resume_from=args.resume,
         num_workers=args.num_workers
     )
-    
+
     if rank == 0:
-        print("="*70)
+        print("=" * 70)
         print(f"Training Configuration:")
         print(f"  Task: {args.task}")
         print(f"  Model: BiLSTM + {'CRF' if args.use_crf else 'Linear'}")
         print(f"  Distributed: {world_size} GPU(s)")
+        print(f"  Data dir: {args.data_dir}")
+        print(f"  Vocab: {args.vocab_path}")
         print(f"  Batch size: {args.batch_size}")
         print(f"  Learning rate: {args.lr}")
         print(f"  Epochs: {args.num_epochs}")
+        print(f"  Shuffle buffer: {args.shuffle_buffer}")
+        print(f"  Streaming: True (Parquet)")
         if args.resume:
             print(f"  Resume from: {args.resume}")
-        print("="*70)
-    
-    # Load datasets
+        print("=" * 70)
+
+    # Load vocab
     if rank == 0:
-        print("\nLoading datasets...")
-    
-    train_dataset = ChineseTextDataset(
-        data_path=args.train_data,
-        label_config=label_config,
-        max_length=512
-    )
-    
-    # Share vocab với val và test
-    vocab = train_dataset.get_vocab()
-    
-    val_dataset = ChineseTextDataset(
-        data_path=args.val_data,
-        label_config=label_config,
-        max_length=512,
-        vocab=vocab
-    )
-    
-    test_dataset = ChineseTextDataset(
-        data_path=args.test_data,
-        label_config=label_config,
-        max_length=512,
-        vocab=vocab
-    )
-    
+        print("\nLoading vocabulary...")
+
+    vocab = load_vocab(args.vocab_path)
+    vocab_size = vocab.get('vocab_size', len(vocab['char2id']))
+
     if rank == 0:
-        print(f"  Train: {len(train_dataset)} examples")
-        print(f"  Val: {len(val_dataset)} examples")
-        print(f"  Test: {len(test_dataset)} examples")
-        print(f"  Vocab size: {train_dataset.vocab_size}")
+        print(f"  Vocab size: {vocab_size}")
         print(f"  Num labels: {label_config.num_labels}")
-    
-    # Create dataloaders
-    train_loader, val_loader, test_loader = create_dataloaders(
-        train_dataset,
-        val_dataset,
-        test_dataset,
+
+    # Create streaming dataloaders
+    if rank == 0:
+        print("\nCreating streaming dataloaders...")
+
+    train_loader, val_loader, test_loader, train_dataset, _ = create_streaming_dataloaders(
+        data_dir=args.data_dir,
+        label_config=label_config,
+        vocab=vocab,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        rank=rank,
-        world_size=world_size
+        max_length=256,
+        shuffle_buffer=args.shuffle_buffer,
+        seed=args.seed,
+        train_split=args.train_split,
+        val_split=args.val_split,
+        test_split=args.test_split,
     )
-    
+
+    if rank == 0:
+        print("  Streaming dataloaders created successfully")
+
     # Create model
     model = create_model(
-        vocab_size=train_dataset.vocab_size,
+        vocab_size=vocab_size,
         num_labels=label_config.num_labels,
         model_config=model_config
     )
-    
+
     if rank == 0:
         num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"  Model parameters: {num_params:,}")
-    
+
     # Save configs
     if rank == 0:
         label_config.save(os.path.join(args.save_dir, 'label_config.json'))
         training_config.save(os.path.join(args.save_dir, 'training_config.json'))
-    
+
+        # Lưu vocab path vào checkpoint dir để evaluate dùng lại
+        import shutil
+        vocab_save_path = os.path.join(args.save_dir, 'vocab.json')
+        if not os.path.exists(vocab_save_path):
+            shutil.copy2(args.vocab_path, vocab_save_path)
+
     # Create trainer
     trainer = Trainer(
         model=model,
@@ -209,13 +214,16 @@ def main():
         rank=rank,
         world_size=world_size
     )
-    
+
+    # Store train_dataset reference for set_epoch
+    trainer.train_dataset = train_dataset
+
     # Train
     if rank == 0:
         print("\nStarting training...\n")
-    
+
     trainer.train()
-    
+
     # Cleanup
     if world_size > 1:
         cleanup_distributed()

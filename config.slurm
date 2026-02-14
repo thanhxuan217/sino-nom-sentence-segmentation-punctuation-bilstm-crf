@@ -23,11 +23,14 @@ export TASK="segmentation"  # "segmentation" hoặc "punctuation"
 export USE_CRF="true"       # true để dùng CRF, false để dùng Linear
 
 # ============================================================================
-# DATA PATHS (relative to WORKSPACE)
+# DATA PATHS (Parquet streaming)
 # ============================================================================
-export TRAIN_DATA="${WORKSPACE}/data/train.jsonl"
-export VAL_DATA="${WORKSPACE}/data/val.jsonl"
-export TEST_DATA="${WORKSPACE}/data/test.jsonl"
+export DATA_DIR="${WORKSPACE}/data"
+export VOCAB_PATH="${WORKSPACE}/vocab.json"
+export TRAIN_SPLIT="train"
+export VAL_SPLIT="val"
+export TEST_SPLIT="test"
+export SHUFFLE_BUFFER=10000
 
 # ============================================================================
 # MODEL HYPERPARAMETERS

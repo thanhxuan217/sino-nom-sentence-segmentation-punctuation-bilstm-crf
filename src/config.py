@@ -15,9 +15,9 @@ class ModelConfig:
     embedding_dim: int = 128
     hidden_dim: int = 256
     num_layers: int = 2
-    dropout: float = 0.3
+    dropout: float = 0.2
     bidirectional: bool = True
-    use_crf: bool = False  # True để dùng CRF, False để dùng Linear
+    use_crf: bool = True  # True để dùng CRF, False để dùng Linear
 
 
 @dataclass
@@ -27,12 +27,12 @@ class TrainingConfig:
     task_type: str = "segmentation"  # "punctuation" hoặc "segmentation"
     
     # Data paths
-    train_data: str = "data/train.jsonl"
-    val_data: str = "data/val.jsonl"
-    test_data: str = "data/test.jsonl"
+    train_data: str = ""
+    val_data: str = ""
+    test_data: str = ""
     
     # Training hyperparameters
-    batch_size: int = 32
+    batch_size: int = 64
     num_epochs: int = 50
     learning_rate: float = 1e-3
     weight_decay: float = 1e-5
@@ -40,7 +40,7 @@ class TrainingConfig:
     warmup_steps: int = 500
     
     # Data
-    max_length: int = 512
+    max_length: int = 256
     num_workers: int = 4
     
     # Checkpoint & Logging

@@ -113,7 +113,8 @@ EOF
 
 echo "Evaluation Settings:"
 echo "========================================================================"
-echo "Test data: ${TEST_DATA}"
+echo "Test data: ${DATA_DIR}/${TEST_SPLIT}/"
+echo "Vocab: ${VOCAB_PATH}"
 echo "Number of samples: ${NUM_SAMPLES}"
 echo "Output directory: ${WORKSPACE}/evaluation_results/${TASK}"
 echo "Random seed: ${SEED}"
@@ -139,7 +140,9 @@ torchrun \
     --nproc_per_node=2 \
     evaluate.py \
     --checkpoint ${CHECKPOINT} \
-    --test_data ${TEST_DATA} \
+    --data_dir ${DATA_DIR} \
+    --vocab_path ${VOCAB_PATH} \
+    --test_split ${TEST_SPLIT} \
     --num_samples ${NUM_SAMPLES} \
     --output_dir "${WORKSPACE}/evaluation_results/${TASK}" \
     --seed ${SEED}

@@ -160,9 +160,13 @@ class Trainer:
         total_loss = 0.0
         num_batches = 0
         
-        # Set epoch cho sampler
-        if self.world_size > 1:
+        # Set epoch cho sampler hoặc streaming dataset
+        if self.world_size > 1 and hasattr(self.train_loader, 'sampler') and hasattr(self.train_loader.sampler, 'set_epoch'):
             self.train_loader.sampler.set_epoch(epoch)
+        
+        # Set epoch cho streaming dataset (ParquetStreamingDataset)
+        if hasattr(self, 'train_dataset') and hasattr(self.train_dataset, 'set_epoch'):
+            self.train_dataset.set_epoch(epoch)
         
         progress_bar = tqdm(
             self.train_loader,
