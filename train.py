@@ -44,32 +44,44 @@ def parse_args():
                         help='Tên split test (default: test)')
     parser.add_argument('--shuffle_buffer', type=int, default=10000,
                         help='Kích thước shuffle buffer (default: 10000)')
+    parser.add_argument('--val_max_samples', type=int, default=6000,
+                        help='Số mẫu validation tối đa mỗi epoch (0 = không giới hạn, default: 6000)')
 
     # Model
     parser.add_argument('--use_crf', action='store_true',
                         help='Use CRF instead of Linear head')
-    parser.add_argument('--embedding_dim', type=int, default=128,
+    parser.add_argument('--embedding_dim', type=int, default=256,
                         help='Embedding dimension')
-    parser.add_argument('--hidden_dim', type=int, default=256,
+    parser.add_argument('--hidden_dim', type=int, default=512,
                         help='LSTM hidden dimension')
-    parser.add_argument('--num_layers', type=int, default=2,
+    parser.add_argument('--num_layers', type=int, default=3,
                         help='Number of LSTM layers')
-    parser.add_argument('--dropout', type=float, default=0.2,
+    parser.add_argument('--dropout', type=float, default=0.5,
                         help='Dropout rate')
 
     # Training
-    parser.add_argument('--batch_size', type=int, default=64,
+    parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size')
-    parser.add_argument('--num_epochs', type=int, default=5,
+    parser.add_argument('--num_epochs', type=int, default=10,
                         help='Number of epochs')
     parser.add_argument('--max_steps', type=int, default=-1,
                         help='Max training steps per epoch (-1 = unlimited)')
-    parser.add_argument('--lr', type=float, default=1e-3,
+    parser.add_argument('--lr', type=float, default=2e-3,
                         help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-5,
                         help='Weight decay')
     parser.add_argument('--gradient_clip', type=float, default=5.0,
                         help='Gradient clipping')
+    parser.add_argument('--warmup_steps', type=int, default=2000,
+                        help='Number of warmup steps')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=2,
+                        help='Gradient accumulation steps')
+    parser.add_argument('--use_amp', action='store_true',
+                        help='Use automatic mixed precision')
+    parser.add_argument('--max_length', type=int, default=256,
+                        help='Maximum sequence length')
+    parser.add_argument('--save_every_n_steps', type=int, default=5000,
+                        help='Save intra-epoch checkpoint every N steps')
 
     # Paths
     parser.add_argument('--save_dir', type=str, default='checkpoints',
@@ -125,10 +137,15 @@ def main():
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
         gradient_clip=args.gradient_clip,
+        warmup_steps=args.warmup_steps,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        use_amp=args.use_amp,
+        max_length=args.max_length,
         save_dir=args.save_dir,
         log_dir=args.log_dir,
         resume_from=args.resume,
-        num_workers=args.num_workers
+        num_workers=args.num_workers,
+        save_every_n_steps=args.save_every_n_steps
     )
 
     if rank == 0:
@@ -142,7 +159,12 @@ def main():
         print(f"  Batch size: {args.batch_size}")
         print(f"  Learning rate: {args.lr}")
         print(f"  Epochs: {args.num_epochs}")
+        print(f"  Max length: {args.max_length}")
+        print(f"  Warmup steps: {args.warmup_steps}")
+        print(f"  Gradient accumulation: {args.gradient_accumulation_steps}")
+        print(f"  AMP: {args.use_amp}")
         print(f"  Shuffle buffer: {args.shuffle_buffer}")
+        print(f"  Val max samples: {args.val_max_samples} {'(unlimited)' if args.val_max_samples == 0 else ''}")
         print(f"  Streaming: True (Parquet)")
         if args.resume:
             print(f"  Resume from: {args.resume}")
@@ -163,22 +185,26 @@ def main():
     if rank == 0:
         print("\nCreating streaming dataloaders...")
 
-    train_loader, val_loader, test_loader, train_dataset, _ = create_streaming_dataloaders(
+    train_loader, val_loader, full_val_loader, test_loader, train_dataset, _ = create_streaming_dataloaders(
         data_dir=args.data_dir,
         label_config=label_config,
         vocab=vocab,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        max_length=256,
+        max_length=args.max_length,
         shuffle_buffer=args.shuffle_buffer,
         seed=args.seed,
         train_split=args.train_split,
         val_split=args.val_split,
         test_split=args.test_split,
+        val_max_samples=args.val_max_samples,
     )
 
     if rank == 0:
         print("  Streaming dataloaders created successfully")
+        if args.val_max_samples > 0:
+            print(f"  Val loader: limited to {args.val_max_samples} samples per epoch")
+            print(f"  Full val loader: all samples (after training)")
 
     # Create model
     model = create_model(
@@ -207,6 +233,7 @@ def main():
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
+        full_val_loader=full_val_loader,
         test_loader=test_loader,
         label_config=label_config,
         training_config=training_config,

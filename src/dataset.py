@@ -248,6 +248,7 @@ class ParquetStreamingDataset(IterableDataset):
         shuffle_buffer: int = 0,
         seed: int = 42,
         epoch: int = 0,
+        max_samples: int = 0,
     ):
         """
         Args:
@@ -259,6 +260,7 @@ class ParquetStreamingDataset(IterableDataset):
             shuffle_buffer: Kích thước buffer để shuffle (0 = không shuffle)
             seed: Random seed
             epoch: Epoch hiện tại (dùng để thay đổi shuffle order)
+            max_samples: Số mẫu tối đa (0 = không giới hạn)
         """
         super().__init__()
         self.label_config = label_config
@@ -269,6 +271,7 @@ class ParquetStreamingDataset(IterableDataset):
         self.shuffle_buffer = shuffle_buffer
         self.seed = seed
         self.epoch = epoch
+        self.max_samples = max_samples
 
         # Tìm tất cả parquet files trong split directory
         split_dir = os.path.join(data_dir, split)
@@ -354,10 +357,14 @@ class ParquetStreamingDataset(IterableDataset):
             )
 
         # Yield processed examples
+        count = 0
         for example in dataset:
             result = self._process_example(example)
             if result is not None:
                 yield result
+                count += 1
+                if self.max_samples > 0 and count >= self.max_samples:
+                    break
 
 
 def create_streaming_dataloaders(
@@ -372,11 +379,14 @@ def create_streaming_dataloaders(
     train_split: str = 'train',
     val_split: str = 'val',
     test_split: str = 'test',
+    val_max_samples: int = 0,
 ):
     """
     Tạo DataLoader cho streaming datasets.
-    Trả về (train_loader, val_loader, test_loader, train_dataset, vocab_size).
+    Trả về (train_loader, val_loader, full_val_loader, test_loader, train_dataset, vocab_size).
     train_dataset được trả về để gọi set_epoch().
+    val_loader: giới hạn val_max_samples mẫu (dùng khi train).
+    full_val_loader: toàn bộ mẫu (dùng sau khi train xong).
     """
     train_dataset = ParquetStreamingDataset(
         data_dir=data_dir,
@@ -395,6 +405,17 @@ def create_streaming_dataloaders(
         vocab=vocab,
         max_length=max_length,
         shuffle_buffer=0,  # Không shuffle val
+        max_samples=val_max_samples,  # Giới hạn mẫu khi train
+    )
+
+    full_val_dataset = ParquetStreamingDataset(
+        data_dir=data_dir,
+        split=val_split,
+        label_config=label_config,
+        vocab=vocab,
+        max_length=max_length,
+        shuffle_buffer=0,
+        max_samples=0,  # Không giới hạn - toàn bộ mẫu
     )
 
     test_dataset = ParquetStreamingDataset(
@@ -423,6 +444,14 @@ def create_streaming_dataloaders(
         pin_memory=True,
     )
 
+    full_val_loader = DataLoader(
+        full_val_dataset,
+        batch_size=batch_size * 2,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=True,
+    )
+
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size * 2,
@@ -431,4 +460,4 @@ def create_streaming_dataloaders(
         pin_memory=True,
     )
 
-    return train_loader, val_loader, test_loader, train_dataset, train_dataset.vocab_size
+    return train_loader, val_loader, full_val_loader, test_loader, train_dataset, train_dataset.vocab_size

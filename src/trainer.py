@@ -1,6 +1,6 @@
 # src/trainer.py
 """
-Trainer với distributed training và resume support
+Trainer với distributed training, AMP, gradient accumulation, và resume support
 """
 
 import os
@@ -9,22 +9,25 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import OneCycleLR
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 import json
 from pathlib import Path
+from typing import Dict, Optional
 
 from .metrics import MetricsCalculator, collect_predictions
 
 
 class Trainer:
-    """Trainer với resume support"""
+    """Trainer với AMP, gradient accumulation, và resume support"""
     
     def __init__(
         self,
         model: nn.Module,
         train_loader,
         val_loader,
+        full_val_loader,
         test_loader,
         label_config,
         training_config,
@@ -35,6 +38,7 @@ class Trainer:
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self.full_val_loader = full_val_loader
         self.test_loader = test_loader
         self.label_config = label_config
         self.training_config = training_config
@@ -61,14 +65,24 @@ class Trainer:
             weight_decay=training_config.weight_decay
         )
         
-        # Scheduler
-        self.scheduler = ReduceLROnPlateau(
-            self.optimizer,
-            mode='max',
-            factor=0.5,
-            patience=3,
-            verbose=(rank == 0)
+        # Gradient accumulation
+        self.gradient_accumulation_steps = getattr(
+            training_config, 'gradient_accumulation_steps', 1
         )
+        
+        # Mixed Precision
+        self.use_amp = getattr(training_config, 'use_amp', False)
+        self.scaler = GradScaler(enabled=self.use_amp)
+        
+        # OneCycleLR scheduler (replaces warmup + ReduceLROnPlateau)
+        # Estimate total steps for OneCycleLR
+        self.warmup_steps = getattr(training_config, 'warmup_steps', 2000)
+        # We'll create the scheduler after we know the number of batches
+        self.scheduler = None
+        self.global_step = 0
+        
+        # Intra-epoch checkpoint
+        self.save_every_n_steps = getattr(training_config, 'save_every_n_steps', 0)
         
         # Metrics
         self.metrics_calculator = MetricsCalculator(label_config)
@@ -83,7 +97,28 @@ class Trainer:
         if training_config.resume_from:
             self.resume_from_checkpoint(training_config.resume_from)
     
-    def save_checkpoint(self, epoch: int, val_f1: float, is_best: bool = False):
+    def _create_scheduler(self, steps_per_epoch: int):
+        """Create OneCycleLR scheduler based on actual steps per epoch."""
+        total_steps = steps_per_epoch * self.training_config.num_epochs
+        pct_start = min(self.warmup_steps / max(total_steps, 1), 0.3)
+        
+        self.scheduler = OneCycleLR(
+            self.optimizer,
+            max_lr=self.training_config.learning_rate,
+            total_steps=total_steps,
+            pct_start=pct_start,
+            anneal_strategy='cos',
+            div_factor=25.0,       # initial_lr = max_lr / 25
+            final_div_factor=1e4,  # final_lr = initial_lr / 1e4
+        )
+        
+        if self.rank == 0:
+            print(f"  OneCycleLR: total_steps={total_steps}, "
+                  f"warmup={int(pct_start * total_steps)} steps, "
+                  f"max_lr={self.training_config.learning_rate}")
+    
+    def save_checkpoint(self, epoch: int, val_f1: float, is_best: bool = False,
+                        step: Optional[int] = None):
         """Lưu checkpoint"""
         if self.rank != 0:
             return
@@ -92,9 +127,10 @@ class Trainer:
         
         checkpoint = {
             'epoch': epoch,
+            'global_step': self.global_step,
             'model_state_dict': model_to_save.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
+            'scaler_state_dict': self.scaler.state_dict(),
             'best_val_f1': self.best_val_f1,
             'best_epoch': self.best_epoch,
             'patience_counter': self.patience_counter,
@@ -102,11 +138,20 @@ class Trainer:
             'model_config': vars(self.model_config)
         }
         
-        # Save latest checkpoint
-        checkpoint_path = os.path.join(
-            self.training_config.save_dir,
-            f'checkpoint_epoch_{epoch}.pt'
-        )
+        if self.scheduler is not None:
+            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+        
+        # Save with step info if intra-epoch
+        if step is not None:
+            checkpoint_path = os.path.join(
+                self.training_config.save_dir,
+                f'checkpoint_epoch_{epoch}_step_{step}.pt'
+            )
+        else:
+            checkpoint_path = os.path.join(
+                self.training_config.save_dir,
+                f'checkpoint_epoch_{epoch}.pt'
+            )
         torch.save(checkpoint, checkpoint_path)
         
         # Save latest as resumable
@@ -125,7 +170,7 @@ class Trainer:
                 'best_model.pt'
             )
             torch.save(checkpoint, best_path)
-            print(f"Saved best model (F1: {val_f1:.4f})")
+            print(f"✓ Saved best model (F1: {val_f1:.4f})")
     
     def resume_from_checkpoint(self, checkpoint_path: str):
         """Resume training từ checkpoint"""
@@ -140,22 +185,26 @@ class Trainer:
         else:
             self.model.load_state_dict(checkpoint['model_state_dict'])
         
-        # Load optimizer và scheduler
+        # Load optimizer
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Load scaler
+        if 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         
         # Load training state
         self.start_epoch = checkpoint['epoch'] + 1
+        self.global_step = checkpoint.get('global_step', 0)
         self.best_val_f1 = checkpoint.get('best_val_f1', 0.0)
         self.best_epoch = checkpoint.get('best_epoch', 0)
         self.patience_counter = checkpoint.get('patience_counter', 0)
         
         if self.rank == 0:
-            print(f"Resumed from epoch {checkpoint['epoch']}")
+            print(f"Resumed from epoch {checkpoint['epoch']}, step {self.global_step}")
             print(f"Best F1: {self.best_val_f1:.4f} at epoch {self.best_epoch}")
     
     def train_epoch(self, epoch: int) -> float:
-        """Train một epoch"""
+        """Train một epoch với AMP và gradient accumulation"""
         self.model.train()
         total_loss = 0.0
         num_batches = 0
@@ -174,46 +223,87 @@ class Trainer:
             disable=(self.rank != 0)
         )
         
+        self.optimizer.zero_grad()
+        
         for step, batch in enumerate(progress_bar):
             input_ids = batch['input_ids'].to(self.device)
             label_ids = batch['label_ids'].to(self.device)
             lengths = batch['lengths'].to(self.device)
             
-            # Forward
-            outputs = self.model(input_ids, lengths, label_ids)
-            loss = outputs['loss']
+            # Forward with AMP
+            with autocast(enabled=self.use_amp):
+                outputs = self.model(input_ids, lengths, label_ids)
+                loss = outputs['loss']
+                # Scale loss by accumulation steps
+                loss = loss / self.gradient_accumulation_steps
             
-            # Backward
-            self.optimizer.zero_grad()
-            loss.backward()
+            # Backward with scaler
+            self.scaler.scale(loss).backward()
             
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.training_config.gradient_clip
-            )
+            # Accumulate and step
+            if (step + 1) % self.gradient_accumulation_steps == 0:
+                # Gradient clipping (unscale first for proper clipping)
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.training_config.gradient_clip
+                )
+                
+                # Optimizer step
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.optimizer.zero_grad()
+                
+                # Scheduler step
+                if self.scheduler is not None:
+                    self.scheduler.step()
+                
+                self.global_step += 1
+                
+                # Intra-epoch checkpoint
+                if (self.save_every_n_steps > 0 and 
+                    self.global_step % self.save_every_n_steps == 0):
+                    if self.rank == 0:
+                        print(f"\n💾 Saving intra-epoch checkpoint at step {self.global_step}...")
+                    self.save_checkpoint(epoch, self.best_val_f1, step=self.global_step)
             
-            self.optimizer.step()
-            
-            total_loss += loss.item()
+            # Track loss (unscaled)
+            total_loss += loss.item() * self.gradient_accumulation_steps
             num_batches += 1
             
             # Update progress bar
             if self.rank == 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
                 progress_bar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'avg_loss': f'{total_loss / num_batches:.4f}'
+                    'loss': f'{loss.item() * self.gradient_accumulation_steps:.4f}',
+                    'avg_loss': f'{total_loss / num_batches:.4f}',
+                    'lr': f'{current_lr:.2e}'
                 })
             
             # Logging
             if self.rank == 0 and step % self.training_config.log_interval == 0:
-                print(f"Epoch {epoch}, Step {step}, Loss: {loss.item():.4f}")
+                current_lr = self.optimizer.param_groups[0]['lr']
+                print(f"Epoch {epoch}, Step {step}, Loss: {loss.item() * self.gradient_accumulation_steps:.4f}, LR: {current_lr:.2e}")
+        
+        # Handle remaining gradients if steps not divisible by accumulation
+        if (step + 1) % self.gradient_accumulation_steps != 0:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.training_config.gradient_clip
+            )
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad()
+            if self.scheduler is not None:
+                self.scheduler.step()
+            self.global_step += 1
         
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
         return avg_loss
     
     @torch.no_grad()
-    def evaluate(self, dataloader, split_name: str = "Val") -> Dict:
+    def evaluate(self, dataloader, split_name: str = "Val") -> Optional[Dict]:
         """Evaluate"""
         if self.rank != 0:
             return None
@@ -264,6 +354,7 @@ class Trainer:
         
         output = {
             'epoch': epoch,
+            'global_step': self.global_step,
             'split': split,
             'task_type': self.label_config.task_type,
             'training_config': self.training_config.to_dict(),
@@ -283,6 +374,29 @@ class Trainer:
     
     def train(self):
         """Main training loop"""
+        # Create scheduler on first call (need to know steps_per_epoch)
+        # For streaming datasets, we estimate or use a large number
+        # We'll create it with a reasonable estimate and adjust
+        if self.scheduler is None:
+            # Try to get length of train_loader; for IterableDataset this may fail
+            try:
+                steps_per_epoch = len(self.train_loader) // self.gradient_accumulation_steps
+            except TypeError:
+                # IterableDataset - estimate based on dataset size
+                # Use a reasonable estimate; OneCycleLR will still work
+                steps_per_epoch = 50000  # Conservative estimate
+                if self.rank == 0:
+                    print(f"⚠ IterableDataset: estimating {steps_per_epoch} steps/epoch")
+            
+            self._create_scheduler(steps_per_epoch)
+            
+            # If resuming, fast-forward scheduler
+            if self.global_step > 0 and self.scheduler is not None:
+                for _ in range(self.global_step):
+                    self.scheduler.step()
+                if self.rank == 0:
+                    print(f"  Fast-forwarded scheduler to step {self.global_step}")
+        
         for epoch in range(self.start_epoch, self.training_config.num_epochs + 1):
             # Train
             avg_loss = self.train_epoch(epoch)
@@ -296,9 +410,6 @@ class Trainer:
                 
                 if self.rank == 0 and val_metrics:
                     val_f1 = val_metrics['overall']['f1']
-                    
-                    # Update scheduler
-                    self.scheduler.step(val_f1)
                     
                     # Check best
                     is_best = val_f1 > self.best_val_f1
@@ -319,15 +430,25 @@ class Trainer:
                     
                     # Early stopping
                     if self.patience_counter >= self.training_config.early_stopping_patience:
-                        print(f"\nEarly stopping after {epoch} epochs")
+                        print(f"\n⏹ Early stopping after {epoch} epochs")
                         print(f"Best F1: {self.best_val_f1:.4f} at epoch {self.best_epoch}")
                         break
         
-        # Final test
+        # Final full validation evaluation
+        if self.rank == 0 and self.full_val_loader is not None:
+            print(f"\n{'='*60}")
+            print(f"Running FULL validation evaluation...")
+            print(f"{'='*60}")
+            full_val_metrics = self.evaluate(self.full_val_loader, "Full Validation")
+            if full_val_metrics:
+                self.save_metrics(full_val_metrics, 'full_val', self.best_epoch)
+
+        # Final summary
         if self.rank == 0:
             print(f"\n{'='*60}")
             print(f"Training completed!")
             print(f"Best epoch: {self.best_epoch}, Best F1: {self.best_val_f1:.4f}")
+            print(f"Total steps: {self.global_step}")
             print(f"{'='*60}")
 
 

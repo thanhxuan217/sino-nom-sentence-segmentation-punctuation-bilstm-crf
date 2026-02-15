@@ -15,7 +15,8 @@
 # Using torchrun with 2 GPUs
 # ============================================================================
 
-set -e
+# Note: removed 'set -e' because it prevents the error handling
+# code (TRAIN_EXIT_CODE check) from executing when torchrun fails
 
 echo "========================================================================"
 echo "Job Information"
@@ -87,6 +88,10 @@ echo "Memory: ${SLURM_MEM}"
 echo "Batch Size: ${BATCH_SIZE}"
 echo "Epochs: ${NUM_EPOCHS}"
 echo "Learning Rate: ${LEARNING_RATE}"
+echo "Max Length: ${MAX_LENGTH}"
+echo "Warmup Steps: ${WARMUP_STEPS}"
+echo "Gradient Accumulation: ${GRADIENT_ACCUMULATION_STEPS}"
+echo "AMP: ${USE_AMP}"
 echo "Save Dir: ${SAVE_DIR}"
 echo "Log Dir: ${LOG_DIR}"
 if [ ! -z "$RESUME_CHECKPOINT" ]; then
@@ -116,6 +121,11 @@ TRAIN_CMD="train.py \
     --lr ${LEARNING_RATE} \
     --weight_decay ${WEIGHT_DECAY} \
     --gradient_clip ${GRADIENT_CLIP} \
+    --warmup_steps ${WARMUP_STEPS} \
+    --gradient_accumulation_steps ${GRADIENT_ACCUMULATION_STEPS} \
+    --max_length ${MAX_LENGTH} \
+    --save_every_n_steps ${SAVE_EVERY_N_STEPS} \
+    --val_max_samples ${VAL_MAX_SAMPLES} \
     --save_dir ${SAVE_DIR} \
     --log_dir ${LOG_DIR} \
     --num_workers ${NUM_WORKERS} \
@@ -123,6 +133,10 @@ TRAIN_CMD="train.py \
 
 if [ "$USE_CRF" = "true" ]; then
     TRAIN_CMD="${TRAIN_CMD} --use_crf"
+fi
+
+if [ "$USE_AMP" = "true" ]; then
+    TRAIN_CMD="${TRAIN_CMD} --use_amp"
 fi
 
 if [ ! -z "$RESUME_CHECKPOINT" ] && [ -f "$RESUME_CHECKPOINT" ]; then

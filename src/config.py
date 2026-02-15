@@ -12,10 +12,10 @@ from pathlib import Path
 @dataclass
 class ModelConfig:
     """Cấu hình model architecture"""
-    embedding_dim: int = 128
-    hidden_dim: int = 256
-    num_layers: int = 2
-    dropout: float = 0.2
+    embedding_dim: int = 256
+    hidden_dim: int = 512
+    num_layers: int = 3
+    dropout: float = 0.5
     bidirectional: bool = True
     use_crf: bool = True  # True để dùng CRF, False để dùng Linear
 
@@ -32,12 +32,14 @@ class TrainingConfig:
     test_data: str = ""
     
     # Training hyperparameters
-    batch_size: int = 64
-    num_epochs: int = 50
-    learning_rate: float = 1e-3
+    batch_size: int = 128
+    num_epochs: int = 10
+    learning_rate: float = 2e-3
     weight_decay: float = 1e-5
     gradient_clip: float = 5.0
-    warmup_steps: int = 500
+    warmup_steps: int = 2000
+    gradient_accumulation_steps: int = 2
+    use_amp: bool = True
     
     # Data
     max_length: int = 256
@@ -50,6 +52,7 @@ class TrainingConfig:
     save_interval: int = 5
     eval_interval: int = 1
     log_interval: int = 100
+    save_every_n_steps: int = 5000  # Intra-epoch checkpoint
     
     # Test samples
     num_test_samples: int = 50
@@ -58,7 +61,7 @@ class TrainingConfig:
     distributed: bool = True
     
     # Early stopping
-    early_stopping_patience: int = 10
+    early_stopping_patience: int = 5
     
     def __post_init__(self):
         """Tạo directories nếu chưa tồn tại"""

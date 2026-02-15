@@ -30,24 +30,30 @@ export VOCAB_PATH="${WORKSPACE}/vocab.json"
 export TRAIN_SPLIT="train"
 export VAL_SPLIT="val"
 export TEST_SPLIT="test"
-export SHUFFLE_BUFFER=10000
+export SHUFFLE_BUFFER=50000
 
 # ============================================================================
 # MODEL HYPERPARAMETERS
 # ============================================================================
-export EMBEDDING_DIM=128
-export HIDDEN_DIM=256
-export NUM_LAYERS=2
-export DROPOUT=0.3
+export EMBEDDING_DIM=256
+export HIDDEN_DIM=512
+export NUM_LAYERS=3
+export DROPOUT=0.5
 
 # ============================================================================
 # TRAINING HYPERPARAMETERS
 # ============================================================================
-export BATCH_SIZE=32
-export NUM_EPOCHS=50
-export LEARNING_RATE=0.001
+export BATCH_SIZE=128
+export NUM_EPOCHS=10
+export LEARNING_RATE=0.002
 export WEIGHT_DECAY=0.00001
 export GRADIENT_CLIP=5.0
+export MAX_LENGTH=256
+export WARMUP_STEPS=2000
+export GRADIENT_ACCUMULATION_STEPS=2
+export USE_AMP="true"          # Mixed precision training
+export SAVE_EVERY_N_STEPS=5000  # Intra-epoch checkpoint
+export VAL_MAX_SAMPLES=6000     # Giới hạn mẫu val mỗi epoch (0 = không giới hạn)
 
 # ============================================================================
 # PATHS
@@ -69,10 +75,3 @@ export RESUME_CHECKPOINT=""
 export NUM_WORKERS=4
 export SEED=42
 export NUM_SAMPLES=50  # Số samples hiển thị khi evaluate
-
-# ============================================================================
-# JOB SETTINGS
-# ============================================================================
-export JOB_NAME="${TASK}_bilstm_$([ "$USE_CRF" = "true" ] && echo "crf" || echo "linear")"
-export EMAIL="xuanhuynh233@gmail.com"  # Email nhận thông báo (optional)
-export MAIL_TYPE="END,FAIL"

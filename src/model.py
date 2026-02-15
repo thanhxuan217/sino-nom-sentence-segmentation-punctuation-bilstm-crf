@@ -41,6 +41,7 @@ class BiLSTMLinear(nn.Module):
         
         lstm_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
         
+        self.layer_norm = nn.LayerNorm(lstm_output_dim)
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(lstm_output_dim, num_labels)
         
@@ -79,6 +80,7 @@ class BiLSTMLinear(nn.Module):
             total_length=seq_len
         )
         
+        lstm_output = self.layer_norm(lstm_output)
         lstm_output = self.dropout(lstm_output)
         
         # Classification
@@ -132,6 +134,7 @@ class BiLSTMCRF(nn.Module):
         
         lstm_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
         
+        self.layer_norm = nn.LayerNorm(lstm_output_dim)
         self.dropout = nn.Dropout(dropout)
         self.hidden2tag = nn.Linear(lstm_output_dim, num_labels)
         self.crf = CRF(num_labels, batch_first=True)
@@ -171,6 +174,7 @@ class BiLSTMCRF(nn.Module):
             total_length=seq_len
         )
         
+        lstm_output = self.layer_norm(lstm_output)
         lstm_output = self.dropout(lstm_output)
         
         # Emissions
@@ -191,9 +195,10 @@ class BiLSTMCRF(nn.Module):
             loss = -self.crf(emissions, label_ids_masked, mask=mask, reduction='mean')
             output['loss'] = loss
         
-        # Decode predictions
-        predictions = self.crf.decode(emissions, mask=mask)
-        output['predictions'] = predictions
+        # Decode predictions (chỉ khi inference, không cần khi training)
+        if label_ids is None:
+            predictions = self.crf.decode(emissions, mask=mask)
+            output['predictions'] = predictions
         
         return output
 
