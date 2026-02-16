@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=train_classical_chinese
+#SBATCH --job-name=lstm-seg
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --mem=16G
 #SBATCH --gres=gpu:2
 #SBATCH --time=48:00:00
 #SBATCH --output=slurm_logs/%x_%j.out
@@ -29,50 +29,39 @@ echo "Working Directory: $(pwd)"
 echo "========================================================================"
 
 # Load configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/config.slurm"
+source "config.slurm"
 
 # Create necessary directories
 mkdir -p "${SAVE_DIR}"
 mkdir -p "${LOG_DIR}"
 mkdir -p "${SLURM_LOG_DIR}"
 
-# Navigate to workspace
-cd "${WORKSPACE}"
+# Activate conda environment
+echo "Activating conda environment..."
+source /media02/ddien02/datnd/miniconda3/etc/profile.d/conda.sh
+conda activate /media02/ddien02/thanhxuan217/envs/sikubert
 
-# ============================================================================
-# SETUP ENVIRONMENT
-# ============================================================================
-echo ""
-echo "Setting up environment..."
-echo "========================================================================"
-
-# Load Anaconda
-if [ -f "/opt/anaconda3/etc/profile.d/conda.sh" ]; then
-    source /opt/anaconda3/etc/profile.d/conda.sh
-elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-    source $HOME/anaconda3/etc/profile.d/conda.sh
-elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source $HOME/miniconda3/etc/profile.d/conda.sh
-else
-    echo "Error: Conda not found!"
-    exit 1
-fi
-
-# Activate local conda environment
-conda activate "${CONDA_ENV}"
-
-echo "Conda environment: ${CONDA_ENV}"
-echo "Python: $(which python)"
+echo "Conda environment activated: $CONDA_DEFAULT_ENV"
+echo "Python path: $(which python)"
 echo "Python version: $(python --version)"
 echo ""
 
+# Set environment variables
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+
 # ============================================================================
-# GPU INFORMATION
+# PRINT CONFIGURATION
 # ============================================================================
+
+# Print GPU information
+echo ""
 echo "GPU Information:"
-echo "========================================================================"
-nvidia-smi
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader
+else
+    echo "nvidia-smi not found"
+fi
 echo ""
 
 # ============================================================================
@@ -82,9 +71,6 @@ echo "Training Configuration:"
 echo "========================================================================"
 echo "Task: ${TASK}"
 echo "Model: BiLSTM + $([ "$USE_CRF" = "true" ] && echo "CRF" || echo "Linear")"
-echo "Number of GPUs: 2 (torchrun)"
-echo "CPUs: ${SLURM_CPUS}"
-echo "Memory: ${SLURM_MEM}"
 echo "Batch Size: ${BATCH_SIZE}"
 echo "Epochs: ${NUM_EPOCHS}"
 echo "Learning Rate: ${LEARNING_RATE}"
@@ -170,44 +156,6 @@ else
     conda deactivate
     exit $TRAIN_EXIT_CODE
 fi
-echo "========================================================================"
-
-# ============================================================================
-# RUN EVALUATION WITH TORCHRUN (2 GPUs)
-# ============================================================================
-BEST_MODEL="${SAVE_DIR}/best_model.pt"
-
-if [ -f "$BEST_MODEL" ]; then
-    echo ""
-    echo "========================================================================"
-    echo "Running evaluation on best model with torchrun..."
-    echo "========================================================================"
-    
-    export MASTER_PORT=12356  # Different port
-    
-    torchrun \
-        --standalone \
-        --nnodes=1 \
-        --nproc_per_node=2 \
-        evaluate.py \
-        --checkpoint ${BEST_MODEL} \
-        --data_dir ${DATA_DIR} \
-        --vocab_path ${VOCAB_PATH} \
-        --test_split ${TEST_SPLIT} \
-        --num_samples ${NUM_SAMPLES} \
-        --output_dir "${WORKSPACE}/evaluation_results/${TASK}" \
-        --seed ${SEED}
-    
-    EVAL_EXIT_CODE=$?
-    
-    if [ $EVAL_EXIT_CODE -eq 0 ]; then
-        echo "Evaluation completed successfully!"
-    else
-        echo "Evaluation failed with exit code: $EVAL_EXIT_CODE"
-    fi
-else
-    echo "Warning: Best model not found at ${BEST_MODEL}"
-fi
 
 # ============================================================================
 # JOB COMPLETION
@@ -219,5 +167,3 @@ echo "End Time: $(date)"
 echo "Results saved to: ${SAVE_DIR}"
 echo "Logs saved to: ${LOG_DIR}"
 echo "========================================================================"
-
-conda deactivate

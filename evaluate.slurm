@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --mem=16G
 #SBATCH --gres=gpu:2
 #SBATCH --time=02:00:00
 #SBATCH --output=slurm_logs/%x_%j.out
@@ -27,48 +27,34 @@ echo "Start Time: $(date)"
 echo "========================================================================"
 
 # Load configuration
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/config.slurm"
+source "config.slurm"
 
-# Navigate to workspace
-cd "${WORKSPACE}"
+# Activate conda environment
+echo "Activating conda environment..."
+source /media02/ddien02/datnd/miniconda3/etc/profile.d/conda.sh
+conda activate /media02/ddien02/thanhxuan217/envs/sikubert
 
-# ============================================================================
-# SETUP ENVIRONMENT
-# ============================================================================
-echo ""
-echo "Setting up environment..."
-echo "========================================================================"
-
-# Load Anaconda
-if [ -f "/opt/anaconda3/etc/profile.d/conda.sh" ]; then
-    source /opt/anaconda3/etc/profile.d/conda.sh
-elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
-    source $HOME/anaconda3/etc/profile.d/conda.sh
-elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source $HOME/miniconda3/etc/profile.d/conda.sh
-else
-    echo "Error: Conda not found!"
-    exit 1
-fi
-
-# Activate local conda environment
-conda activate "${CONDA_ENV}"
-
-echo "Conda environment: ${CONDA_ENV}"
-echo "Python: $(which python)"
+echo "Conda environment activated: $CONDA_DEFAULT_ENV"
+echo "Python path: $(which python)"
 echo "Python version: $(python --version)"
 echo ""
 
+# Set environment variables
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+
 # ============================================================================
-# GPU INFORMATION
+# PRINT CONFIGURATION
 # ============================================================================
-echo "GPU Information:"
-echo "========================================================================"
-nvidia-smi
+
+# Print GPU information
 echo ""
-echo "Using 2 GPUs for distributed evaluation"
-echo "========================================================================"
+echo "GPU Information:"
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv,noheader
+else
+    echo "nvidia-smi not found"
+fi
 echo ""
 
 # ============================================================================
@@ -95,21 +81,7 @@ echo "File size: $(du -h ${CHECKPOINT} | cut -f1)"
 echo "Modified: $(stat -c %y ${CHECKPOINT} 2>/dev/null || stat -f %Sm ${CHECKPOINT})"
 echo ""
 
-# Display checkpoint details
-python << EOF
-import torch
-try:
-    ckpt = torch.load('${CHECKPOINT}', map_location='cpu')
-    print(f"Model Information:")
-    print(f"  Trained Epoch: {ckpt['epoch']}")
-    print(f"  Best Validation F1: {ckpt['best_val_f1']:.4f}")
-    print(f"  Best Epoch: {ckpt['best_epoch']}")
-    print(f"  Task: {ckpt['training_config']['task_type']}")
-    print(f"  Model Type: BiLSTM + {'CRF' if ckpt['model_config']['use_crf'] else 'Linear'}")
-except Exception as e:
-    print(f"Warning: Could not load checkpoint info: {e}")
-print("")
-EOF
+# Checkpoint details will be printed by evaluate.py
 
 echo "Evaluation Settings:"
 echo "========================================================================"
@@ -143,6 +115,7 @@ torchrun \
     --data_dir ${DATA_DIR} \
     --vocab_path ${VOCAB_PATH} \
     --test_split ${TEST_SPLIT} \
+    --task ${TEST_SPLIT} \
     --num_samples ${NUM_SAMPLES} \
     --output_dir "${WORKSPACE}/evaluation_results/${TASK}" \
     --seed ${SEED}
@@ -157,23 +130,9 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "Results:"
     echo "  - Metrics: ${WORKSPACE}/evaluation_results/${TASK}/test_metrics.json"
     echo "  - Samples: ${WORKSPACE}/evaluation_results/${TASK}/test_samples.txt"
+    echo "  - Sample Results: ${WORKSPACE}/evaluation_results/${TASK}/sample_results.json"
     echo ""
-    
-    # Display summary metrics if available
-    if [ -f "${WORKSPACE}/evaluation_results/${TASK}/test_metrics.json" ]; then
-        echo "Performance Summary:"
-        python << EOF
-import json
-with open('${WORKSPACE}/evaluation_results/${TASK}/test_metrics.json', 'r') as f:
-    metrics = json.load(f)
-overall = metrics['metrics']['overall']
-print(f"  Overall F1: {overall['f1']:.4f}")
-print(f"  Precision:  {overall['precision']:.4f}")
-print(f"  Recall:     {overall['recall']:.4f}")
-print(f"  Samples:    {overall['total_samples']}")
-print(f"  GPUs used:  {metrics['num_gpus']}")
-EOF
-    fi
+    # Performance summary is now printed by evaluate.py
 else
     echo "✗ Evaluation failed with exit code: $EXIT_CODE"
 fi
@@ -181,7 +140,5 @@ fi
 echo ""
 echo "End Time: $(date)"
 echo "========================================================================"
-
-conda deactivate
 
 exit $EXIT_CODE

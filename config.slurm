@@ -5,16 +5,7 @@
 # WORKSPACE & ENVIRONMENT
 # ============================================================================
 export WORKSPACE="/media02/ddien02/thanhxuan217/main_src"
-export CONDA_ENV="${WORKSPACE}/envs/classical_chinese"  # Local conda environment
-
-# ============================================================================
-# SLURM RESOURCE LIMITS (FIXED - DO NOT CHANGE)
-# ============================================================================
-export SLURM_CPUS=16
-export SLURM_MEM="64G"
-export SLURM_GPUS=2          # Fixed: Always use 2 GPUs
-export SLURM_TIME="48:00:00"  # 48 hours max
-export SLURM_PARTITION="gpu"
+export CONDA_ENV="/media02/ddien02/thanhxuan217/envs/sikubert"  # Local conda environment
 
 # ============================================================================
 # TASK CONFIGURATION
@@ -29,7 +20,7 @@ export DATA_DIR="${WORKSPACE}/data"
 export VOCAB_PATH="${WORKSPACE}/vocab.json"
 export TRAIN_SPLIT="train"
 export VAL_SPLIT="val"
-export TEST_SPLIT="test"
+export TEST_SPLIT="test" # val if run in all validation set, else test
 export SHUFFLE_BUFFER=50000
 
 # ============================================================================

@@ -20,7 +20,7 @@ from typing import List
 from src.config import LabelConfig, ModelConfig
 from src.dataset import load_vocab, ParquetStreamingDataset, collate_fn
 from src.model import create_model
-from src.metrics import MetricsCalculator, collect_predictions
+from src.metrics import MetricsCalculator, collect_and_compute_metrics
 from torch.utils.data import DataLoader
 
 
@@ -96,11 +96,130 @@ def generate_text_with_labels(
         return ''.join(result)
 
 
+def print_checkpoint_info(checkpoint_path: str):
+    """Print checkpoint details (moved from slurm script)"""
+    try:
+        ckpt = torch.load(checkpoint_path, map_location='cpu')
+        print("Model Information:")
+        print(f"  Trained Epoch: {ckpt['epoch']}")
+        print(f"  Best Validation F1: {ckpt['best_val_f1']:.4f}")
+        print(f"  Best Epoch: {ckpt['best_epoch']}")
+        print(f"  Task: {ckpt['training_config']['task_type']}")
+        print(f"  Model Type: BiLSTM + {'CRF' if ckpt['model_config']['use_crf'] else 'Linear'}")
+    except Exception as e:
+        print(f"Warning: Could not load checkpoint info: {e}")
+    print("")
+
+
+def print_metrics_summary(metrics_path: str):
+    """Print performance summary from saved metrics JSON (moved from slurm script)"""
+    try:
+        with open(metrics_path, 'r', encoding='utf-8') as f:
+            metrics = json.load(f)
+        overall = metrics['metrics']['overall']
+        print("Performance Summary:")
+        print(f"  Overall F1: {overall['f1']:.4f}")
+        print(f"  Precision:  {overall['precision']:.4f}")
+        print(f"  Recall:     {overall['recall']:.4f}")
+        print(f"  Samples:    {overall['total_samples']}")
+        print(f"  GPUs used:  {metrics['num_gpus']}")
+    except Exception as e:
+        print(f"Warning: Could not load metrics summary: {e}")
+    print("")
+
+
+def generate_sample_results(
+    data_dir: str,
+    test_split: str,
+    label_config,
+    vocab: dict,
+    model,
+    device,
+    use_crf: bool,
+    task_type: str,
+    output_dir: str,
+    world_size: int = 1,
+    max_samples: int = 100,
+    seed: int = 42,
+):
+    """Generate structured sample results with gold/pred labels and labeled text.
+    
+    Outputs a JSON file with up to max_samples entries, each containing:
+      - idx, text, gold_labels, pred_labels, gold_text_labeled, pred_text_labeled
+    """
+    sample_dataset = ParquetStreamingDataset(
+        data_dir=data_dir,
+        split=test_split,
+        label_config=label_config,
+        vocab=vocab,
+        max_length=512,
+        shuffle_buffer=1000,
+        seed=seed,
+    )
+
+    id2char_vocab = vocab['id2char']
+    results = []
+
+    with torch.no_grad():
+        for idx, sample in enumerate(sample_dataset):
+            if idx >= max_samples:
+                break
+
+            input_ids = sample['input_ids'].unsqueeze(0).to(device)
+            label_ids = sample['label_ids']
+            length = sample['length']
+            lengths = torch.tensor([length]).to(device)
+
+            # Predict
+            outputs = (model.module if world_size > 1 else model)(input_ids, lengths)
+
+            if use_crf:
+                preds = outputs['predictions'][0]
+            else:
+                logits = outputs['logits']
+                preds = torch.argmax(logits, dim=-1)[0][:length].cpu().numpy()
+
+            # Get chars and labels
+            chars = [id2char_vocab.get(cid.item(), '?') for cid in input_ids[0][:length]]
+            true_labels_arr = label_ids[:length].numpy()
+
+            text = ''.join(chars)
+            gold_labels = [label_config.id2label[int(lid)] for lid in true_labels_arr]
+            pred_labels = [label_config.id2label[int(pid)] for pid in preds]
+
+            gold_text = generate_text_with_labels(
+                chars, true_labels_arr, label_config.id2label, task_type
+            )
+            pred_text = generate_text_with_labels(
+                chars, preds, label_config.id2label, task_type
+            )
+
+            result = {
+                "idx": idx,
+                "text": text,
+                "gold_labels": gold_labels,
+                "pred_labels": pred_labels,
+                "gold_text_labeled": gold_text,
+                "pred_text_labeled": pred_text,
+            }
+            results.append(result)
+
+    # Save results
+    os.makedirs(output_dir, exist_ok=True)
+    results_path = os.path.join(output_dir, 'sample_results.json')
+    with open(results_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+
+    print(f"Saved {len(results)} sample results to {results_path}")
+    return results
+
+
 def evaluate_and_sample(
     checkpoint_path: str,
     data_dir: str,
     vocab_path: str,
     test_split: str = 'test',
+    task: str = 'test',
     num_samples: int = 50,
     output_dir: str = 'evaluation_results',
     rank: int = 0,
@@ -111,6 +230,7 @@ def evaluate_and_sample(
     # Only rank 0 prints
     if rank == 0:
         print(f"Loading checkpoint from {checkpoint_path}")
+        print_checkpoint_info(checkpoint_path)
 
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
@@ -189,35 +309,18 @@ def evaluate_and_sample(
         print("EVALUATION")
         print("=" * 70)
 
-    # Collect predictions from all GPUs
-    predictions, labels = collect_predictions(
+    # Streaming evaluation: cộng dồn confusion matrix, không lưu toàn bộ lên RAM
+    metrics_calc = MetricsCalculator(label_config)
+    metrics = collect_and_compute_metrics(
         model.module if world_size > 1 else model,
         test_loader,
         device,
+        metrics_calc,
         use_crf=model_config.use_crf
     )
 
-    # Gather results from all ranks (only rank 0 will have complete results)
-    if world_size > 1:
-        # Gather predictions and labels from all ranks
-        all_predictions = [None] * world_size
-        all_labels = [None] * world_size
-
-        dist.all_gather_object(all_predictions, predictions)
-        dist.all_gather_object(all_labels, labels)
-
-        if rank == 0:
-            # Concatenate results from all ranks
-            import numpy as np
-            predictions = np.concatenate(all_predictions)
-            labels = np.concatenate(all_labels)
-
-    # Only rank 0 computes metrics and saves results
+    # Only rank 0 prints metrics and saves results
     if rank == 0:
-        # Compute metrics
-        metrics_calc = MetricsCalculator(label_config)
-        metrics = metrics_calc.compute_metrics(predictions, labels)
-
         # Print metrics
         print(f"\nTest Results:")
         print(f"{'=' * 70}")
@@ -252,88 +355,115 @@ def evaluate_and_sample(
 
         print(f"\nSaved metrics to {metrics_path}")
 
-        # Generate samples bằng cách lấy từ streaming
-        print("\n" + "=" * 70)
-        print(f"GENERATING {num_samples} SAMPLES")
-        print("=" * 70)
+        # Only generate samples and structured results for test set
+        if task == 'test':
+            # Generate samples bằng cách lấy từ streaming
+            print("\n" + "=" * 70)
+            print(f"GENERATING {num_samples} SAMPLES")
+            print("=" * 70)
 
-        # Thu thập một số samples từ streaming dataset
-        sample_dataset = ParquetStreamingDataset(
-            data_dir=data_dir,
-            split=test_split,
-            label_config=label_config,
-            vocab=vocab,
-            max_length=512,
-            shuffle_buffer=1000,  # Shuffle nhẹ để lấy samples đa dạng
-            seed=42,
-        )
+            # Thu thập một số samples từ streaming dataset
+            sample_dataset = ParquetStreamingDataset(
+                data_dir=data_dir,
+                split=test_split,
+                label_config=label_config,
+                vocab=vocab,
+                max_length=512,
+                shuffle_buffer=1000,  # Shuffle nhẹ để lấy samples đa dạng
+                seed=42,
+            )
 
-        samples_output = []
-        samples_output.append("=" * 70)
-        samples_output.append(f"TEST SAMPLES - {task_type.upper()}")
-        samples_output.append("=" * 70)
+            samples_output = []
+            samples_output.append("=" * 70)
+            samples_output.append(f"TEST SAMPLES - {task_type.upper()}")
+            samples_output.append("=" * 70)
 
-        char2id = vocab['char2id']
-        id2char_vocab = vocab['id2char']
+            char2id = vocab['char2id']
+            id2char_vocab = vocab['id2char']
 
-        with torch.no_grad():
-            sample_count = 0
-            for sample in sample_dataset:
-                if sample_count >= num_samples:
-                    break
+            with torch.no_grad():
+                sample_count = 0
+                for sample in sample_dataset:
+                    if sample_count >= num_samples:
+                        break
 
-                input_ids = sample['input_ids'].unsqueeze(0).to(device)
-                label_ids = sample['label_ids']
-                length = sample['length']
-                lengths = torch.tensor([length]).to(device)
+                    input_ids = sample['input_ids'].unsqueeze(0).to(device)
+                    label_ids = sample['label_ids']
+                    length = sample['length']
+                    lengths = torch.tensor([length]).to(device)
 
-                # Predict
-                outputs = (model.module if world_size > 1 else model)(input_ids, lengths)
+                    # Predict
+                    outputs = (model.module if world_size > 1 else model)(input_ids, lengths)
 
-                if model_config.use_crf:
-                    preds = outputs['predictions'][0]
-                else:
-                    logits = outputs['logits']
-                    preds = torch.argmax(logits, dim=-1)[0][:length].cpu().numpy()
+                    if model_config.use_crf:
+                        preds = outputs['predictions'][0]
+                    else:
+                        logits = outputs['logits']
+                        preds = torch.argmax(logits, dim=-1)[0][:length].cpu().numpy()
 
-                # Get chars and labels
-                chars = [id2char_vocab.get(cid.item(), '?') for cid in input_ids[0][:length]]
-                true_labels_arr = label_ids[:length].numpy()
+                    # Get chars and labels
+                    chars = [id2char_vocab.get(cid.item(), '?') for cid in input_ids[0][:length]]
+                    true_labels_arr = label_ids[:length].numpy()
 
-                sample_count += 1
+                    sample_count += 1
 
-                # Format output
-                samples_output.append(f"\nSample {sample_count}/{num_samples}")
-                samples_output.append("-" * 70)
+                    # Format output
+                    samples_output.append(f"\nSample {sample_count}/{num_samples}")
+                    samples_output.append("-" * 70)
 
-                # Detailed comparison
-                samples_output.append(decode_predictions(
-                    chars, preds, true_labels_arr, label_config.id2label
-                ))
+                    # Detailed comparison
+                    samples_output.append(decode_predictions(
+                        chars, preds, true_labels_arr, label_config.id2label
+                    ))
 
-                # Generated text
-                samples_output.append("\nPredicted:")
-                samples_output.append(generate_text_with_labels(
-                    chars, preds, label_config.id2label, task_type
-                ))
+                    # Generated text
+                    samples_output.append("\nPredicted:")
+                    samples_output.append(generate_text_with_labels(
+                        chars, preds, label_config.id2label, task_type
+                    ))
 
-                # True text
-                samples_output.append("\nGround Truth:")
-                samples_output.append(generate_text_with_labels(
-                    chars, true_labels_arr, label_config.id2label, task_type
-                ))
+                    # True text
+                    samples_output.append("\nGround Truth:")
+                    samples_output.append(generate_text_with_labels(
+                        chars, true_labels_arr, label_config.id2label, task_type
+                    ))
 
-                samples_output.append("=" * 70)
+                    samples_output.append("=" * 70)
 
-        # Print and save samples
-        result_text = "\n".join(samples_output)
-        print(result_text)
+            # Print and save samples
+            result_text = "\n".join(samples_output)
+            print(result_text)
 
-        samples_path = os.path.join(output_dir, 'test_samples.txt')
-        with open(samples_path, 'w', encoding='utf-8') as f:
-            f.write(result_text)
+            samples_path = os.path.join(output_dir, 'test_samples.txt')
+            with open(samples_path, 'w', encoding='utf-8') as f:
+                f.write(result_text)
 
-        print(f"\nSaved samples to {samples_path}")
+            print(f"\nSaved samples to {samples_path}")
+
+            # Generate structured sample results (max 100)
+            print("\n" + "=" * 70)
+            print("GENERATING STRUCTURED SAMPLE RESULTS (max 100)")
+            print("=" * 70)
+            generate_sample_results(
+                data_dir=data_dir,
+                test_split=test_split,
+                label_config=label_config,
+                vocab=vocab,
+                model=model,
+                device=device,
+                use_crf=model_config.use_crf,
+                task_type=task_type,
+                output_dir=output_dir,
+                world_size=world_size,
+                max_samples=100,
+                seed=42,
+            )
+        else:
+            print(f"\nSkipping sample generation (task='{task}', only runs for task='test')")
+
+        # Print metrics summary
+        print_metrics_summary(metrics_path)
+
         print("\nEvaluation completed!")
 
 
@@ -352,6 +482,9 @@ def main():
                         help='Number of samples to display')
     parser.add_argument('--output_dir', type=str, default='evaluation_results',
                         help='Directory to save results')
+    parser.add_argument('--task', type=str, default='test',
+                        choices=['test', 'val'],
+                        help='Evaluate on test or val set (samples only generated for test)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for sampling')
 
@@ -373,6 +506,7 @@ def main():
             data_dir=args.data_dir,
             vocab_path=args.vocab_path,
             test_split=args.test_split,
+            task=args.task,
             num_samples=args.num_samples,
             output_dir=args.output_dir,
             rank=rank,

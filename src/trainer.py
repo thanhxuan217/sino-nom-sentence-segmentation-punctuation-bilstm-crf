@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 from typing import Dict, Optional
 
-from .metrics import MetricsCalculator, collect_predictions
+from .metrics import MetricsCalculator, collect_and_compute_metrics
 
 
 class Trainer:
@@ -312,16 +312,14 @@ class Trainer:
         print(f"Evaluating on {split_name} set...")
         print(f"{'='*60}")
         
-        # Collect predictions
-        predictions, labels = collect_predictions(
+        # Streaming evaluation: cộng dồn confusion matrix, không lưu toàn bộ lên RAM
+        metrics = collect_and_compute_metrics(
             self.model.module if self.world_size > 1 else self.model,
             dataloader,
             self.device,
+            self.metrics_calculator,
             use_crf=self.model_config.use_crf
         )
-        
-        # Compute metrics
-        metrics = self.metrics_calculator.compute_metrics(predictions, labels)
         
         # Print
         self._print_metrics(metrics, split_name)
