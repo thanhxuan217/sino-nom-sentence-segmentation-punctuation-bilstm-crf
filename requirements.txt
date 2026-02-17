@@ -25,4 +25,4 @@ tensorboard==2.18.0
 json5==0.9.28
 
 # Hugging Face Datasets
-datasets==4.5.0
+datasets==3.2.0
