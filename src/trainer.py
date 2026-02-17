@@ -203,7 +203,7 @@ class Trainer:
             print(f"Resumed from epoch {checkpoint['epoch']}, step {self.global_step}")
             print(f"Best F1: {self.best_val_f1:.4f} at epoch {self.best_epoch}")
     
-    def train_epoch(self, epoch: int) -> float:
+    def train_epoch(self, epoch: int, total_batches: Optional[int] = None) -> float:
         """Train một epoch với AMP và gradient accumulation"""
         self.model.train()
         total_loss = 0.0
@@ -220,7 +220,8 @@ class Trainer:
         progress_bar = tqdm(
             self.train_loader,
             desc=f"Epoch {epoch}",
-            disable=(self.rank != 0)
+            disable=(self.rank != 0),
+            total=total_batches
         )
         
         self.optimizer.zero_grad()
@@ -373,20 +374,20 @@ class Trainer:
     
     def train(self):
         """Main training loop"""
+        # Determine steps per epoch and total batches for tqdm
+        try:
+            num_batches = len(self.train_loader)
+            steps_per_epoch = num_batches // self.gradient_accumulation_steps
+        except TypeError:
+            # IterableDataset - estimate based on dataset size
+            # Use a reasonable estimate; OneCycleLR will still work
+            steps_per_epoch = 50000  # Conservative estimate
+            num_batches = steps_per_epoch * self.gradient_accumulation_steps
+            if self.rank == 0:
+                print(f"⚠ IterableDataset: estimating {steps_per_epoch} steps/epoch")
+
         # Create scheduler on first call (need to know steps_per_epoch)
-        # For streaming datasets, we estimate or use a large number
-        # We'll create it with a reasonable estimate and adjust
         if self.scheduler is None:
-            # Try to get length of train_loader; for IterableDataset this may fail
-            try:
-                steps_per_epoch = len(self.train_loader) // self.gradient_accumulation_steps
-            except TypeError:
-                # IterableDataset - estimate based on dataset size
-                # Use a reasonable estimate; OneCycleLR will still work
-                steps_per_epoch = 50000  # Conservative estimate
-                if self.rank == 0:
-                    print(f"⚠ IterableDataset: estimating {steps_per_epoch} steps/epoch")
-            
             self._create_scheduler(steps_per_epoch)
             
             # If resuming, fast-forward scheduler
@@ -398,7 +399,7 @@ class Trainer:
         
         for epoch in range(self.start_epoch, self.training_config.num_epochs + 1):
             # Train
-            avg_loss = self.train_epoch(epoch)
+            avg_loss = self.train_epoch(epoch, total_batches=num_batches)
             
             if self.rank == 0:
                 print(f"\nEpoch {epoch} - Average Loss: {avg_loss:.4f}")
