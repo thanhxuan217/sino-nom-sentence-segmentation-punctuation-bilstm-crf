@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=eval_classical_chinese
-#SBATCH --partition=gpu
+#SBATCH --job-name=lstm_eval
+#SBATCH --partition=batch
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:2
-#SBATCH --time=02:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.err
 
@@ -57,20 +57,12 @@ else
 fi
 echo ""
 
-# ============================================================================
-# CHECKPOINT SELECTION
-# ============================================================================
-
-# Checkpoint có thể được truyền qua biến môi trường hoặc argument
-CHECKPOINT="${1:-${SAVE_DIR}/best_model.pt}"
-
 if [ ! -f "$CHECKPOINT" ]; then
     echo "Error: Checkpoint not found at ${CHECKPOINT}"
     echo ""
     echo "Available checkpoints in ${SAVE_DIR}:"
     ls -lht "${SAVE_DIR}"/*.pt 2>/dev/null || echo "No checkpoints found"
     echo ""
-    conda deactivate
     exit 1
 fi
 
@@ -101,10 +93,6 @@ echo ""
 echo "Starting distributed evaluation with torchrun on 2 GPUs..."
 echo "========================================================================"
 
-# Set environment variables for distributed
-export MASTER_ADDR=localhost
-export MASTER_PORT=12356  # Different port from training
-
 # Run with torchrun
 torchrun \
     --standalone \
@@ -117,7 +105,7 @@ torchrun \
     --test_split ${TEST_SPLIT} \
     --task ${TEST_SPLIT} \
     --num_samples ${NUM_SAMPLES} \
-    --output_dir "${WORKSPACE}/evaluation_results/${TASK}" \
+    --output_dir "${WORKSPACE}/evaluation_${TEST_SPLIT}_results/${TASK}" \
     --seed ${SEED}
 
 EXIT_CODE=$?
