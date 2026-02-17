@@ -452,8 +452,6 @@ class Trainer:
 
 def setup_distributed(rank: int, world_size: int):
     """Setup distributed training"""
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
     
     dist.init_process_group(
         backend='nccl',

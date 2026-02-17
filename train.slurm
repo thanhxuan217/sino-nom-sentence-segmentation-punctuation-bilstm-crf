@@ -136,13 +136,11 @@ fi
 echo "Starting distributed training with torchrun on 2 GPUs..."
 echo "========================================================================"
 
-export MASTER_ADDR=localhost
-export MASTER_PORT=12355
-
 torchrun \
     --standalone \
     --nnodes=1 \
     --nproc_per_node=2 \
+    --master_port=${MASTER_PORT} \
     ${TRAIN_CMD}
 
 TRAIN_EXIT_CODE=$?
