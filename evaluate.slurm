@@ -32,7 +32,7 @@ source "config.slurm"
 # Activate conda environment
 echo "Activating conda environment..."
 source /media02/ddien02/datnd/miniconda3/etc/profile.d/conda.sh
-conda activate /media02/ddien02/thanhxuan217/envs/sikubert
+conda activate /media02/ddien02/thanhxuan217/envs/bilstm_crf
 
 echo "Conda environment activated: $CONDA_DEFAULT_ENV"
 echo "Python path: $(which python)"

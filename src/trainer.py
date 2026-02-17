@@ -72,7 +72,7 @@ class Trainer:
         
         # Mixed Precision
         self.use_amp = getattr(training_config, 'use_amp', False)
-        self.scaler = GradScaler(enabled=self.use_amp)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
         
         # OneCycleLR scheduler (replaces warmup + ReduceLROnPlateau)
         # Estimate total steps for OneCycleLR
@@ -225,6 +225,7 @@ class Trainer:
         
         self.optimizer.zero_grad()
         
+        step = -1
         for step, batch in enumerate(progress_bar):
             input_ids = batch['input_ids'].to(self.device)
             label_ids = batch['label_ids'].to(self.device)

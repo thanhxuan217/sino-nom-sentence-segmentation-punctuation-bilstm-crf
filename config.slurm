@@ -7,7 +7,6 @@
 export MASTER_ADDR="localhost"
 export MASTER_PORT="29500" # Default torch port, can be changed
 export WORKSPACE="/media02/ddien02/thanhxuan217/main_src"
-export CONDA_ENV="/media02/ddien02/thanhxuan217/envs/sikubert"  # Local conda environment
 
 # ============================================================================
 # TASK CONFIGURATION
