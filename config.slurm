@@ -65,6 +65,6 @@ export RESUME_CHECKPOINT=""
 # ============================================================================
 # OTHER SETTINGS
 # ============================================================================
-export NUM_WORKERS=4
+export NUM_WORKERS=0
 export SEED=42
 export NUM_SAMPLES=50  # Số samples hiển thị khi evaluate
