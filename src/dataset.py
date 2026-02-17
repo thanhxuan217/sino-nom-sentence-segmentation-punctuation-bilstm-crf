@@ -291,9 +291,17 @@ class ParquetStreamingDataset(IterableDataset):
         text = example['text']
         labels = example['labels']
 
+        # Xử lý labels nếu lưu dưới dạng string trong parquet
+        if isinstance(labels, str):
+            try:
+                labels = json.loads(labels)
+            except (json.JSONDecodeError, ValueError):
+                # Thử split nếu không phải JSON
+                labels = labels.split()
+
         # Kiểm tra độ dài khớp
         if len(text) != len(labels):
-            return None
+            return 'length_mismatch'
 
         # Truncate nếu cần
         if len(text) > self.max_length:
@@ -309,7 +317,7 @@ class ParquetStreamingDataset(IterableDataset):
         try:
             label_ids = [self.label_config.label2id[label] for label in labels]
         except KeyError:
-            return None
+            return 'label_key_error'
 
         return {
             'input_ids': torch.tensor(input_ids, dtype=torch.long),
@@ -356,15 +364,53 @@ class ParquetStreamingDataset(IterableDataset):
                 with_indices=True
             )
 
-        # Yield processed examples
+        # Yield processed examples với diagnostic logging
         count = 0
+        total_seen = 0
+        skip_length_mismatch = 0
+        skip_label_error = 0
+        logged_sample = False
         for example in dataset:
+            total_seen += 1
+
+            # Log mẫu đầu tiên để debug
+            if not logged_sample and rank == 0:
+                logged_sample = True
+                print(f"[DEBUG] First example keys: {list(example.keys())}")
+                print(f"[DEBUG] text type: {type(example['text'])}, len: {len(example['text'])}")
+                print(f"[DEBUG] labels type: {type(example['labels'])}, "
+                      f"value[:100]: {str(example['labels'])[:100]}")
+
             result = self._process_example(example)
+            if isinstance(result, str):
+                if result == 'length_mismatch':
+                    skip_length_mismatch += 1
+                elif result == 'label_key_error':
+                    skip_label_error += 1
+                    if skip_label_error <= 3 and rank == 0:
+                        labels = example['labels']
+                        if isinstance(labels, str):
+                            try:
+                                labels = json.loads(labels)
+                            except Exception:
+                                labels = labels.split()
+                        sample_labels = labels[:5] if isinstance(labels, list) else str(labels)[:50]
+                        print(f"[DEBUG] Label KeyError - sample labels: {sample_labels}")
+                continue
             if result is not None:
                 yield result
                 count += 1
                 if self.max_samples > 0 and count >= self.max_samples:
                     break
+
+            # Log tiến độ mỗi 100000 examples
+            if total_seen % 100000 == 0 and rank == 0:
+                print(f"[DEBUG] Seen {total_seen}, yielded {count}, "
+                      f"skip_length={skip_length_mismatch}, skip_label={skip_label_error}")
+
+        if rank == 0:
+            print(f"[Dataset Stats] Total seen: {total_seen}, Yielded: {count}, "
+                  f"Skip(length): {skip_length_mismatch}, Skip(label): {skip_label_error}")
 
 
 def create_streaming_dataloaders(

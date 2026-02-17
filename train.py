@@ -96,6 +96,8 @@ def parse_args():
                         help='Number of data loading workers')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
+    parser.add_argument('--early_stopping_patience', type=int, default=5,
+                        help='Early stopping patience')
 
     return parser.parse_args()
 
@@ -145,7 +147,8 @@ def main():
         log_dir=args.log_dir,
         resume_from=args.resume,
         num_workers=args.num_workers,
-        save_every_n_steps=args.save_every_n_steps
+        save_every_n_steps=args.save_every_n_steps,
+        early_stopping_patience=args.early_stopping_patience
     )
 
     if rank == 0:

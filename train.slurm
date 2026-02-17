@@ -115,7 +115,8 @@ TRAIN_CMD="train.py \
     --save_dir ${SAVE_DIR} \
     --log_dir ${LOG_DIR} \
     --num_workers ${NUM_WORKERS} \
-    --seed ${SEED}"
+    --seed ${SEED} \
+    --early_stopping_patience ${EARLY_STOPPING_PATIENCE}"
 
 if [ "$USE_CRF" = "true" ]; then
     TRAIN_CMD="${TRAIN_CMD} --use_crf"

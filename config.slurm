@@ -46,6 +46,7 @@ export GRADIENT_ACCUMULATION_STEPS=2
 export USE_AMP="true"          # Mixed precision training
 export SAVE_EVERY_N_STEPS=5000  # Intra-epoch checkpoint
 export VAL_MAX_SAMPLES=6000     # Giới hạn mẫu val mỗi epoch (0 = không giới hạn)
+export EARLY_STOPPING_PATIENCE=5    # Số epoch kiên nhẫn trước khi dừng sớm
 
 # ============================================================================
 # PATHS
