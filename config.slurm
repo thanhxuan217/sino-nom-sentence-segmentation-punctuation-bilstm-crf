@@ -36,7 +36,7 @@ export DROPOUT=0.5
 # TRAINING HYPERPARAMETERS
 # ============================================================================
 export BATCH_SIZE=128
-export NUM_EPOCHS=10
+export NUM_EPOCHS=20
 export LEARNING_RATE=0.002
 export WEIGHT_DECAY=0.00001
 export GRADIENT_CLIP=5.0
