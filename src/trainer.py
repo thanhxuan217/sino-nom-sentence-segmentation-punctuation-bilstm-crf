@@ -4,6 +4,7 @@ Trainer với distributed training, AMP, gradient accumulation, và resume suppo
 """
 
 import os
+import time
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -208,6 +209,7 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         num_batches = 0
+        epoch_start_time = time.time()
         
         # Set epoch cho sampler hoặc streaming dataset
         if self.world_size > 1 and hasattr(self.train_loader, 'sampler') and hasattr(self.train_loader.sampler, 'set_epoch'):
@@ -285,7 +287,23 @@ class Trainer:
             # Logging
             if self.rank == 0 and step % self.training_config.log_interval == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch}, Step {step}, Loss: {loss.item() * self.gradient_accumulation_steps:.4f}, LR: {current_lr:.2e}")
+                elapsed = time.time() - epoch_start_time
+                if total_batches and total_batches > 0:
+                    pct = (step + 1) / total_batches * 100
+                    eta_seconds = elapsed / (step + 1) * (total_batches - step - 1)
+                    eta_h = int(eta_seconds // 3600)
+                    eta_m = int((eta_seconds % 3600) // 60)
+                    eta_s = int(eta_seconds % 60)
+                    print(f"Epoch {epoch}, Step {step}/{total_batches} [{pct:.1f}%], "
+                          f"Loss: {loss.item() * self.gradient_accumulation_steps:.4f}, "
+                          f"LR: {current_lr:.2e}, ETA: {eta_h}h{eta_m:02d}m{eta_s:02d}s")
+                else:
+                    elapsed_h = int(elapsed // 3600)
+                    elapsed_m = int((elapsed % 3600) // 60)
+                    elapsed_s = int(elapsed % 60)
+                    print(f"Epoch {epoch}, Step {step}, "
+                          f"Loss: {loss.item() * self.gradient_accumulation_steps:.4f}, "
+                          f"LR: {current_lr:.2e}, Elapsed: {elapsed_h}h{elapsed_m:02d}m{elapsed_s:02d}s")
         
         # Handle remaining gradients if steps not divisible by accumulation
         if (step + 1) % self.gradient_accumulation_steps != 0:
