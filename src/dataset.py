@@ -348,21 +348,16 @@ class ParquetStreamingDataset(IterableDataset):
                 buffer_size=self.shuffle_buffer
             )
 
-        # Chia dữ liệu theo rank (distributed)
-        if world_size > 1:
-            dataset = dataset.filter(
-                lambda _, idx: idx % world_size == rank,
-                with_indices=True
-            )
-
-        # Chia dữ liệu theo worker (DataLoader workers)
+        # Tính toán shard params để chia dữ liệu thủ công
+        # thay vì dùng dataset.filter(with_indices=True) vì nó crash
+        # khi num_workers > 0 (features=None trong worker subprocess)
+        total_shards = world_size
+        shard_index = rank
         if worker_info is not None:
             num_workers = worker_info.num_workers
             worker_id = worker_info.id
-            dataset = dataset.filter(
-                lambda _, idx: idx % num_workers == worker_id,
-                with_indices=True
-            )
+            total_shards = world_size * num_workers
+            shard_index = rank * num_workers + worker_id
 
         # Yield processed examples với diagnostic logging
         count = 0
@@ -370,7 +365,10 @@ class ParquetStreamingDataset(IterableDataset):
         skip_length_mismatch = 0
         skip_label_error = 0
         logged_sample = False
-        for example in dataset:
+        for global_idx, example in enumerate(dataset):
+            # Skip examples không thuộc shard này
+            if total_shards > 1 and global_idx % total_shards != shard_index:
+                continue
             total_seen += 1
 
             # Log mẫu đầu tiên để debug
