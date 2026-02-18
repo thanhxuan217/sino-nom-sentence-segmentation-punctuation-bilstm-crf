@@ -120,7 +120,7 @@ class Trainer:
     
     def save_checkpoint(self, epoch: int, val_f1: float, is_best: bool = False,
                         step: Optional[int] = None):
-        """Lưu checkpoint"""
+        """Lưu checkpoint - chỉ giữ lại 1 checkpoint gần nhất"""
         if self.rank != 0:
             return
         
@@ -142,27 +142,17 @@ class Trainer:
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         
-        # Save with step info if intra-epoch
-        if step is not None:
-            checkpoint_path = os.path.join(
-                self.training_config.save_dir,
-                f'checkpoint_epoch_{epoch}_step_{step}.pt'
-            )
-        else:
-            checkpoint_path = os.path.join(
-                self.training_config.save_dir,
-                f'checkpoint_epoch_{epoch}.pt'
-            )
-        torch.save(checkpoint, checkpoint_path)
-        
-        # Save latest as resumable
+        # Chỉ lưu 1 file latest_checkpoint.pt (ghi đè lên file cũ)
         latest_path = os.path.join(
             self.training_config.save_dir,
             'latest_checkpoint.pt'
         )
         torch.save(checkpoint, latest_path)
         
-        print(f"Saved checkpoint: {checkpoint_path}")
+        if step is not None:
+            print(f"💾 Saved latest checkpoint (epoch {epoch}, step {step})")
+        else:
+            print(f"💾 Saved latest checkpoint (epoch {epoch})")
         
         # Save best model
         if is_best:
