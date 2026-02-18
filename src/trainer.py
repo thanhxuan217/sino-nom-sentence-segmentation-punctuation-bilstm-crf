@@ -319,8 +319,9 @@ class Trainer:
                 self.scheduler.step()
             self.global_step += 1
         
+        actual_batches = step + 1 if step >= 0 else 0
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-        return avg_loss
+        return avg_loss, actual_batches
     
     @torch.no_grad()
     def evaluate(self, dataloader, split_name: str = "Val") -> Optional[Dict]:
@@ -393,16 +394,17 @@ class Trainer:
     def train(self):
         """Main training loop"""
         # Determine steps per epoch and total batches for tqdm
+        is_iterable = False
         try:
             num_batches = len(self.train_loader)
             steps_per_epoch = num_batches // self.gradient_accumulation_steps
         except TypeError:
-            # IterableDataset - estimate based on dataset size
-            # Use a reasonable estimate; OneCycleLR will still work
-            steps_per_epoch = 50000  # Conservative estimate
-            num_batches = steps_per_epoch * self.gradient_accumulation_steps
+            # IterableDataset - unknown length, will auto-detect after epoch 1
+            is_iterable = True
+            num_batches = None  # tqdm will show spinner for epoch 1
+            steps_per_epoch = 50000  # Estimate for scheduler only
             if self.rank == 0:
-                print(f"⚠ IterableDataset: estimating {steps_per_epoch} steps/epoch")
+                print(f"⚠ IterableDataset: batch count unknown, will auto-detect after epoch 1")
 
         # Create scheduler on first call (need to know steps_per_epoch)
         if self.scheduler is None:
@@ -417,7 +419,13 @@ class Trainer:
         
         for epoch in range(self.start_epoch, self.training_config.num_epochs + 1):
             # Train
-            avg_loss = self.train_epoch(epoch, total_batches=num_batches)
+            avg_loss, actual_batches = self.train_epoch(epoch, total_batches=num_batches)
+            
+            # After first epoch with IterableDataset, use actual count for future epochs
+            if is_iterable and num_batches is None and actual_batches > 0:
+                num_batches = actual_batches
+                if self.rank == 0:
+                    print(f"✓ Auto-detected {num_batches} batches/epoch")
             
             if self.rank == 0:
                 print(f"\nEpoch {epoch} - Average Loss: {avg_loss:.4f}")
