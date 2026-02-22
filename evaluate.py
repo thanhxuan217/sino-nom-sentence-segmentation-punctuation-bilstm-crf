@@ -266,6 +266,7 @@ def evaluate_and_sample(
         vocab=vocab,
         max_length=512,
         shuffle_buffer=0,
+        no_shard=True,  # rank=0 đọc toàn bộ test set (không chia shard theo GPU)
     )
 
     if rank == 0:

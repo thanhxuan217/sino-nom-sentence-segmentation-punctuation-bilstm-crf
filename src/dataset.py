@@ -249,6 +249,7 @@ class ParquetStreamingDataset(IterableDataset):
         seed: int = 42,
         epoch: int = 0,
         max_samples: int = 0,
+        no_shard: bool = False,
     ):
         """
         Args:
@@ -272,6 +273,7 @@ class ParquetStreamingDataset(IterableDataset):
         self.seed = seed
         self.epoch = epoch
         self.max_samples = max_samples
+        self.no_shard = no_shard
 
         # Tìm tất cả parquet files trong split directory
         split_dir = os.path.join(data_dir, split)
@@ -356,13 +358,18 @@ class ParquetStreamingDataset(IterableDataset):
         # Tính toán shard params để chia dữ liệu thủ công
         # thay vì dùng dataset.filter(with_indices=True) vì nó crash
         # khi num_workers > 0 (features=None trong worker subprocess)
-        total_shards = world_size
-        shard_index = rank
-        if worker_info is not None:
-            num_workers = worker_info.num_workers
-            worker_id = worker_info.id
-            total_shards = world_size * num_workers
-            shard_index = rank * num_workers + worker_id
+        # no_shard=True: rank=0 đọc toàn bộ data (dùng trong evaluate để tránh mất data)
+        if self.no_shard:
+            total_shards = 1
+            shard_index = 0
+        else:
+            total_shards = world_size
+            shard_index = rank
+            if worker_info is not None:
+                num_workers = worker_info.num_workers
+                worker_id = worker_info.id
+                total_shards = world_size * num_workers
+                shard_index = rank * num_workers + worker_id
 
         # Yield processed examples với diagnostic logging
         count = 0
