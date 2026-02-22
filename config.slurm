@@ -69,4 +69,4 @@ export NUM_WORKERS=0
 export SEED=42
 export NUM_SAMPLES=50  # Số samples hiển thị khi evaluate
 
-export CHECKPOINT="${SAVE_DIR}/latest_checkpoint.pt"
+export CHECKPOINT="${SAVE_DIR}/best_model.pt"

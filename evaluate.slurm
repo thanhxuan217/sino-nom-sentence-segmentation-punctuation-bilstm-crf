@@ -106,6 +106,7 @@ torchrun \
     --task ${TEST_SPLIT} \
     --num_samples ${NUM_SAMPLES} \
     --output_dir "${WORKSPACE}/evaluation_${TEST_SPLIT}_results/${TASK}" \
+    --num_workers ${NUM_WORKERS} \
     --seed ${SEED}
 
 EXIT_CODE=$?

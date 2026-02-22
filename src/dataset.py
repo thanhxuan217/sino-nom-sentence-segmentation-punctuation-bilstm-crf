@@ -326,12 +326,17 @@ class ParquetStreamingDataset(IterableDataset):
         }
 
     def __iter__(self):
+        import torch.distributed as dist
         from datasets import load_dataset
 
         # Lấy thông tin worker và rank
+        # QUAN TRỌNG: Dùng dist.is_initialized() thay vì đọc env var RANK/WORLD_SIZE.
+        # Env var có thể vẫn tồn tại sau khi torchrun kết thúc, khiến evaluate.py
+        # standalone bị nhầm world_size > 1 và sharding sai (data bị nhân lên).
         worker_info = torch.utils.data.get_worker_info()
-        rank = int(os.environ.get('RANK', 0))
-        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        is_distributed = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if is_distributed else 0
+        world_size = dist.get_world_size() if is_distributed else 1
 
         # Load dataset streaming
         dataset = load_dataset(

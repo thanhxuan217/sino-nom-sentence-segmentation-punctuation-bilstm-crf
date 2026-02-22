@@ -223,7 +223,8 @@ def evaluate_and_sample(
     num_samples: int = 50,
     output_dir: str = 'evaluation_results',
     rank: int = 0,
-    world_size: int = 1
+    world_size: int = 1,
+    num_workers: int = 0
 ):
     """Evaluate model và generate samples (distributed)"""
 
@@ -271,12 +272,14 @@ def evaluate_and_sample(
         print(f"Vocab size: {vocab_size}")
 
     # Create dataloader (streaming - không cần DistributedSampler)
+    # num_workers=0 by default để tránh IterableDataset bị shard sai
+    # (mỗi worker tạo ra một iterator độc lập → dữ liệu bị đọc lặp nhiều lần)
     test_loader = DataLoader(
         test_dataset,
         batch_size=32,
-        num_workers=4,
+        num_workers=num_workers,
         collate_fn=collate_fn,
-        pin_memory=True,
+        pin_memory=(num_workers > 0),
     )
 
     # Create model
@@ -485,6 +488,8 @@ def main():
     parser.add_argument('--task', type=str, default='test',
                         choices=['test', 'val'],
                         help='Evaluate on test or val set (samples only generated for test)')
+    parser.add_argument('--num_workers', type=int, default=0,
+                        help='Number of DataLoader workers (default: 0, safe for IterableDataset)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for sampling')
 
@@ -510,7 +515,8 @@ def main():
             num_samples=args.num_samples,
             output_dir=args.output_dir,
             rank=rank,
-            world_size=world_size
+            world_size=world_size,
+            num_workers=args.num_workers
         )
     finally:
         # Cleanup
